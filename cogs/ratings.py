@@ -13,7 +13,7 @@ load_dotenv()
 
 class MovieRateModal(discord.ui.Modal):
     def __init__(self, cog, movie_id, title):
-        super().__init__(title=f"Rate: {title[:35]}...")
+        super().__init__(title="Rate Movie")
         self.cog = cog
         self.movie_id = movie_id
         self.title = title
