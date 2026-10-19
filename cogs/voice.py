@@ -3,7 +3,6 @@ from discord import app_commands
 from discord.ext import commands, tasks
 import sqlite3
 import time
-import random
 from cogs.settings_helper import settings
 
 DB_FILE = "bugsbot.db"
@@ -11,15 +10,21 @@ MIN_LIFETIME = 10
 CLEANUP_INTERVAL = 30
 
 # ─────────────────────────────────────────────
-# CONSTANTS & ASSETS
+# VISUAL THEME
 # ─────────────────────────────────────────────
-DENY_GIFS = [
-    "https://tenor.com/view/agathe-emil-south-park-im-gonna-click-on-decline-decline-gif-20596371",
-    "https://tenor.com/view/decline-denied-no-nope-not-happening-gif-16014268",
-    "https://tenor.com/view/brexby-gif-24077625",
-    "https://tenor.com/view/thinking-issa-rae-bustle-hmm-uhm-gif-4132357844606813462",
-    "https://tenor.com/view/decline-denied-awkward-gif-22072497"
-]
+# Discord embeds cannot use custom CSS, so Cora's visual identity is built
+# around a consistent accent colour, clear hierarchy, and concise copy.
+THEME_COLOR = discord.Color.from_str("#5865F2")
+SUCCESS_COLOR = discord.Color.from_str("#57F287")
+WARNING_COLOR = discord.Color.from_str("#FEE75C")
+DANGER_COLOR = discord.Color.from_str("#ED4245")
+NEUTRAL_COLOR = discord.Color.from_str("#2B2D31")
+
+
+def clean_channel_name(name: str) -> str:
+    """Remove the status marker from a channel name before displaying/editing it."""
+    return name.replace("🔴 ", "").replace("🟢 ", "").replace("🔴", "").replace("🟢", "").strip()
+
 
 # ─────────────────────────────────────────────
 # CONTROL PANEL VIEW
@@ -41,38 +46,53 @@ class VoiceControlView(discord.ui.View):
         return guild.get_channel(self.vc_id)
 
     async def build_embed(self, vc):
-        """Generates a premium, seamless embed for the control panel."""
+        """Build the main voice control panel with a consistent Cora visual style."""
         owner_id = await self.get_owner_id()
         owner = vc.guild.get_member(owner_id) if owner_id else None
-        
+
         perms = vc.permissions_for(vc.guild.default_role)
         is_locked = perms.connect is False
+        clean_name = clean_channel_name(vc.name)
 
-        # 1. The Seamless Trick: Match Discord's dark background
-        embed = discord.Embed(
-            color=discord.Color.from_str("#2B2D31") 
+        status_label = "🔒 Locked" if is_locked else "🟢 Open"
+        status_detail = (
+            "Members need approval to join."
+            if is_locked
+            else "Members can join without approval."
         )
-        
-        # 2. Cleaner Header
-        embed.set_author(name="VOICE CONTROL DASHBOARD", icon_url=self.cog.bot.user.display_avatar.url if self.cog.bot.user else None)
-        
+
+        embed = discord.Embed(
+            title="VOICE CHANNEL CONTROL",
+            description=(
+                f"Manage **{clean_name}** from this panel.\n"
+                "Use the controls below to update your channel."
+            ),
+            color=THEME_COLOR,
+        )
+
+        embed.add_field(
+            name="📡 Channel",
+            value=f"{vc.mention}\n`{len([m for m in vc.members if not m.bot])} member(s) connected`",
+            inline=True,
+        )
+        embed.add_field(
+            name="🛡️ Access",
+            value=f"**{status_label}**\n{status_detail}",
+            inline=True,
+        )
+        embed.add_field(
+            name="👑 Channel owner",
+            value=owner.mention if owner else "`Owner unavailable`",
+            inline=False,
+        )
+
         if owner:
             embed.set_thumbnail(url=owner.display_avatar.url)
-            
-        clean_name = vc.name.replace("🔴 ", "").replace("🟢 ", "").replace("🔴", "").replace("🟢", "").strip()
-        
-        # 3. Blockquotes for formatting
-        status_text = "> 🔴 **Locked**\n> Visitors must knock." if is_locked else "> 🟢 **Open**\n> Publicly accessible."
-        
-        embed.add_field(name="Channel", value=f"> 🔊 **{clean_name}**", inline=True)
-        embed.add_field(name="Status", value=status_text, inline=True)
-        
-        owner_mention = owner.mention if owner else "Unknown"
-        embed.add_field(name="👑 Owner", value=f"> {owner_mention}", inline=False)
-        
-        # 4. Animated GIF Banner
-        embed.set_image(url="https://i.pinimg.com/originals/ce/c3/e9/cec3e9a8a1fd05b7d82c263a2188f8db.gif")
-        
+
+        embed.set_footer(
+            text="Cora • Private Voice Controls",
+            icon_url=self.cog.bot.user.display_avatar.url if self.cog.bot.user else None,
+        )
         return embed
 
     async def update_buttons(self, vc):
@@ -94,13 +114,13 @@ class VoiceControlView(discord.ui.View):
     async def toggle_lock(self, interaction: discord.Interaction, button: discord.ui.Button):
         current_owner = await self.get_owner_id()
         if not current_owner or interaction.user.id != current_owner:
-            return await interaction.response.send_message("❌ Owner only.", ephemeral=True)
+            return await interaction.response.send_message("🔒 **Owner-only control.**", ephemeral=True)
 
         vc = self.get_vc(interaction.guild)
-        if not vc: return await interaction.response.send_message("❌ VC missing.", ephemeral=True)
+        if not vc: return await interaction.response.send_message("⚠️ **Channel unavailable.** It may have been deleted.", ephemeral=True)
 
         perms = vc.permissions_for(interaction.guild.default_role)
-        clean_name = vc.name.replace("🔴 ", "").replace("🟢 ", "").replace("🔴", "").replace("🟢", "").strip()
+        clean_name = clean_channel_name(vc.name)
 
         if perms.connect is False:
             await vc.set_permissions(interaction.guild.default_role, connect=True)
@@ -123,7 +143,7 @@ class VoiceControlView(discord.ui.View):
     @discord.ui.button(label="Rename", emoji="📝", style=discord.ButtonStyle.secondary, custom_id="vc_rename", row=0)
     async def rename_vc(self, interaction: discord.Interaction, _):
         current_owner = await self.get_owner_id()
-        if interaction.user.id != current_owner: return await interaction.response.send_message("❌ Owner only.", ephemeral=True)
+        if interaction.user.id != current_owner: return await interaction.response.send_message("🔒 **Owner-only control.**", ephemeral=True)
         
         modal = discord.ui.Modal(title="Rename Channel")
         name_input = discord.ui.TextInput(label="New Name", min_length=1, max_length=50)
@@ -135,7 +155,7 @@ class VoiceControlView(discord.ui.View):
                 perms = vc.permissions_for(i.guild.default_role)
                 dot = "🔴 " if perms.connect is False else "🟢 "
                 
-                clean_new_name = name_input.value.replace("🔴 ", "").replace("🟢 ", "").replace("🔴", "").replace("🟢", "").strip()
+                clean_new_name = clean_channel_name(name_input.value)
                 new_full_name = f"{dot}{clean_new_name}"
 
                 try:
@@ -155,7 +175,7 @@ class VoiceControlView(discord.ui.View):
     @discord.ui.button(label="Kick/Ban", emoji="👋", style=discord.ButtonStyle.danger, custom_id="vc_kick", row=1)
     async def kick_menu(self, interaction: discord.Interaction, _):
         current_owner = await self.get_owner_id()
-        if interaction.user.id != current_owner: return await interaction.response.send_message("❌ Owner only.", ephemeral=True)
+        if interaction.user.id != current_owner: return await interaction.response.send_message("🔒 **Owner-only control.**", ephemeral=True)
         vc = self.get_vc(interaction.guild)
         if not vc: return 
         
@@ -192,7 +212,7 @@ class VoiceControlView(discord.ui.View):
     async def knock(self, interaction: discord.Interaction, _):
         current_owner = await self.get_owner_id()
         if interaction.user.id == current_owner:
-            return await interaction.response.send_message("⚠️ You own this channel!", ephemeral=True)
+            return await interaction.response.send_message("ℹ️ **You own this channel already.**", ephemeral=True)
         
         vc = self.get_vc(interaction.guild)
         if not vc: return
@@ -200,17 +220,24 @@ class VoiceControlView(discord.ui.View):
         # ANTI-SPAM CHECK
         self.cog.cursor.execute("SELECT 1 FROM pending_requests WHERE user_id = ? AND channel_id = ?", (interaction.user.id, vc.id))
         if self.cog.cursor.fetchone():
-            return await interaction.response.send_message("⏳ **Please Wait:** You already have a pending request.", ephemeral=True)
+            return await interaction.response.send_message("⏳ **Request already pending**\nYour knock is already waiting for the owner.", ephemeral=True)
 
-        await interaction.response.send_message("✊ Knock sent!", ephemeral=True)
+        await interaction.response.send_message("✊ **Knock sent** — the owner has been notified.", ephemeral=True)
         
         # PING THE OWNER WITH AN EMBED
         embed = discord.Embed(
-            title="🔔 Access Request",
-            description=f"{interaction.user.mention} is knocking and wants to join **{vc.name}**!",
-            color=discord.Color.from_str("#2B2D31") # Match the seamless aesthetic
+            title="🔔 Voice Access Request",
+            description=(
+                f"{interaction.user.mention} would like to join **{clean_channel_name(vc.name)}**.\n\n"
+                "Review the request below and choose whether to grant access."
+            ),
+            color=THEME_COLOR,
+            timestamp=discord.utils.utcnow(),
         )
         embed.set_thumbnail(url=interaction.user.display_avatar.url)
+        embed.add_field(name="Requester", value=f"{interaction.user.mention}\n`{interaction.user.id}`", inline=True)
+        embed.add_field(name="Channel", value=vc.mention, inline=True)
+        embed.set_footer(text="Cora • Private Voice Access")
 
         msg = await interaction.channel.send(
             content=f"<@{current_owner}>", # Ghost ping outside the embed
@@ -251,9 +278,13 @@ class JoinRequestView(discord.ui.View):
         # Edit the original request embed
         try:
             embed = interaction.message.embeds[0]
-            embed.color = discord.Color.green()
+            embed.color = SUCCESS_COLOR
             embed.title = "✅ Access Granted"
-            embed.description = f"{self.requester.mention} has been allowed into the channel."
+            embed.description = (
+                f"{self.requester.mention} has been approved to join "
+                f"**{clean_channel_name(self.vc.name)}**."
+            )
+            embed.set_footer(text="Cora • Request resolved")
             await interaction.message.edit(content=None, embed=embed, view=None)
             
             self.cog.cursor.execute("INSERT INTO access_grants VALUES (?, ?, ?)", (self.requester.id, self.vc.id, interaction.message.id))
@@ -261,9 +292,11 @@ class JoinRequestView(discord.ui.View):
 
         # Send a styled public response
         response_embed = discord.Embed(
-            description=f"> ✅ **Access Granted!**\n> {self.requester.mention} has been invited in.",
-            color=discord.Color.from_str("#2B2D31")
+            title="✅ Access granted",
+            description=f"{self.requester.mention} has been approved to join the voice channel.",
+            color=SUCCESS_COLOR,
         )
+        response_embed.set_footer(text="Cora • Private Voice Access")
         await interaction.response.send_message(embed=response_embed, ephemeral=False)
         msg = await interaction.original_response()
         
@@ -276,30 +309,33 @@ class JoinRequestView(discord.ui.View):
 
     @discord.ui.button(label="Deny 🛑", style=discord.ButtonStyle.danger)
     async def deny(self, interaction: discord.Interaction, _):
-        if interaction.user.id != self.owner_id: return
-        
+        if interaction.user.id != self.owner_id:
+            return
+
         await self.clear_pending_status()
-        
-        # Edit the original request embed
-        try: 
+
+        # Update the original request so its final state is clear.
+        try:
             embed = interaction.message.embeds[0]
-            embed.color = discord.Color.red()
+            embed.color = DANGER_COLOR
             embed.title = "🚫 Access Denied"
-            embed.description = f"{self.requester.mention}'s request was denied."
+            embed.description = f"{self.requester.mention}'s request was declined."
+            embed.set_footer(text="Cora • Request resolved")
             await interaction.message.edit(content=None, embed=embed, view=None)
-        except: pass
-        
-        # Send a styled public response with the random Tenor GIF
+        except Exception:
+            pass
+
+        # A clean response without external GIFs.
         response_embed = discord.Embed(
-            description=f"> 🚫 **Access Denied.**\n> Sorry {self.requester.mention}, not this time.",
-            color=discord.Color.from_str("#2B2D31")
+            title="🚫 Access request declined",
+            description=(
+                f"{self.requester.mention}, the owner wasn't able to approve "
+                "your request this time."
+            ),
+            color=DANGER_COLOR,
         )
-        
-        await interaction.response.send_message(
-            content=random.choice(DENY_GIFS), 
-            embed=response_embed, 
-            ephemeral=False
-        )
+        response_embed.set_footer(text="Cora • Private Voice Access")
+        await interaction.response.send_message(embed=response_embed, ephemeral=False)
         self.stop()
 
 
@@ -427,13 +463,13 @@ class Voice(commands.GroupCog, name="voice"):
     async def setup_voice(self, interaction: discord.Interaction, channel: discord.VoiceChannel, interface: discord.TextChannel):
         await settings.set(interaction.guild.id, 'voice', 'join_vc_id', int(channel.id))
         await settings.set(interaction.guild.id, 'voice', 'hub_text_id', int(interface.id))
-        await interaction.response.send_message(f"✅ Setup Complete!\nJoin: {channel.mention}\nInterface: {interface.mention}", ephemeral=True)
+        await interaction.response.send_message(f"✅ **Voice setup complete**\n\n**Join channel:** {channel.mention}\n**Voice directory:** {interface.mention}", ephemeral=True)
 
     @app_commands.command(name="name")
     async def set_name(self, interaction: discord.Interaction, name: str):
         self.cursor.execute("INSERT OR REPLACE INTO vc_titles (user_id, default_title) VALUES (?, ?)", (interaction.user.id, name))
         self.conn.commit()
-        await interaction.response.send_message(f"✅ Default Name Set: **{name}**", ephemeral=True)
+        await interaction.response.send_message(f"✅ **Default channel name saved**\nYour private voice channel will use **{name}**.", ephemeral=True)
 
     @app_commands.command(name="force_name", description="Admin: Change a user's default VC name")
     @app_commands.checks.has_permissions(administrator=True)
@@ -474,7 +510,7 @@ class Voice(commands.GroupCog, name="voice"):
         thread_id = result[0]
 
         await user_vc.set_permissions(member, connect=True, reason=f"Invited by {interaction.user}")
-        await interaction.response.send_message(f"✅ {member.display_name} has been invited and granted access.", ephemeral=True)
+        await interaction.response.send_message(f"✅ **Invitation sent**\n{member.mention} has been granted access to your channel.", ephemeral=True)
 
         thread = interaction.guild.get_thread(thread_id)
         if not thread:
@@ -520,7 +556,7 @@ class Voice(commands.GroupCog, name="voice"):
                             try:
                                 thread = member.guild.get_thread(thread_id) or await member.guild.fetch_channel(thread_id)
                                 if thread:
-                                    await thread.send(f"👑 **Ownership Restored**\nThe original creator has rejoined. {member.mention} is now the owner again.")
+                                    await thread.send(f"👑 **Ownership restored**\nThe original creator has rejoined. {member.mention} is the channel owner again.")
                             except: pass
 
                     # --- AUTO-WHITELIST DRAGGED/JOINING USERS ---
@@ -582,7 +618,7 @@ class Voice(commands.GroupCog, name="voice"):
                         try:
                             thread = member.guild.get_thread(thread_id) or await member.guild.fetch_channel(thread_id)
                             if thread:
-                                await thread.send(f"👑 **Ownership Transfer**\nPrevious owner left. {new_owner.mention} is now the owner.")
+                                await thread.send(f"👑 **Ownership transferred**\nThe previous owner left. {new_owner.mention} is now the channel owner.")
                         except: pass
 
         # 3. CREATING
@@ -605,17 +641,29 @@ class Voice(commands.GroupCog, name="voice"):
                 await vc.set_permissions(member, connect=True, move_members=True, manage_channels=True)
                 await member.move_to(vc)
 
-                # --- NEW SEAMLESS HUB EMBED ---
+                # --- VOICE DIRECTORY EMBED ---
                 hub_embed = discord.Embed(
-                    description=f"> 🔊 **{title}** is currently active.\n> ⬇️ Open the thread below to request access or manage settings.",
-                    color=discord.Color.from_str("#2B2D31")
+                    title="🔊 Private voice channel",
+                    description=(
+                        f"**{clean_channel_name(title)}** is now active.\n\n"
+                        "Open the thread attached to this post to request access, "
+                        "invite someone, or manage the channel."
+                    ),
+                    color=THEME_COLOR,
+                    timestamp=discord.utils.utcnow(),
                 )
-                hub_embed.set_author(name=f"{member.display_name}'s Voice Channel", icon_url=member.display_avatar.url)
+                hub_embed.set_author(
+                    name=f"{member.display_name}'s channel",
+                    icon_url=member.display_avatar.url,
+                )
+                hub_embed.add_field(name="Status", value="🔒 Private", inline=True)
+                hub_embed.add_field(name="Owner", value=member.mention, inline=True)
+                hub_embed.set_footer(text="Cora • Voice Directory")
                 
                 directory_msg = await hub.send(embed=hub_embed)
                 thread = await directory_msg.create_thread(name=f"🔒 Join Request - {member.name}")
                 
-                # --- NEW CONTROL PANEL EMBED ---
+                # --- VOICE CONTROL PANEL ---
                 view = VoiceControlView(self, vc.id)
                 await view.update_buttons(vc) # Initialize button state
                 panel_embed = await view.build_embed(vc)
