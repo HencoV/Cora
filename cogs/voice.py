@@ -12,8 +12,6 @@ CLEANUP_INTERVAL = 30
 # ─────────────────────────────────────────────
 # VISUAL THEME
 # ─────────────────────────────────────────────
-# Discord embeds cannot use custom CSS, so Cora's visual identity is built
-# around a consistent accent colour, clear hierarchy, and concise copy.
 THEME_COLOR = discord.Color.from_str("#5865F2")
 SUCCESS_COLOR = discord.Color.from_str("#57F287")
 WARNING_COLOR = discord.Color.from_str("#FEE75C")
